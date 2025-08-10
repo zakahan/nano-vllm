@@ -30,7 +30,7 @@ class LLMEngine:
         self.model_runner = ModelRunner(config, 0, self.events)
         self.tokenizer = AutoTokenizer.from_pretrained(config.model, use_fast=True)
         config.eos = self.tokenizer.eos_token_id
-        self.scheduler = Scheduler(config)
+        self.scheduler = Scheduler(config)          # 调度器
         atexit.register(self.exit)
 
     def exit(self):
@@ -41,12 +41,16 @@ class LLMEngine:
 
     def add_request(self, prompt: str | list[int], sampling_params: SamplingParams):
         if isinstance(prompt, str):
-            prompt = self.tokenizer.encode(prompt)
-        seq = Sequence(prompt, sampling_params)
-        self.scheduler.add(seq)
+            prompt = self.tokenizer.encode(prompt)      # str list -> token_id list
+        seq = Sequence(prompt, sampling_params)         # 大概就是一种存储token_id的结构，方便调度？
+        self.scheduler.add(seq)         # 加入调度器的等待队列
 
     def step(self):
+        # 一个很重要的事情：
+        # prefill =>  kv-cache存储N，大模型生成1，持续一轮
+        # decode  =>  kv-cache存储1，大模型生成1，持续多轮（直到结束）
         seqs, is_prefill = self.scheduler.schedule()
+        # print("prefill" if is_prefill else "decode")
         token_ids = self.model_runner.call("run", seqs, is_prefill)
         self.scheduler.postprocess(seqs, token_ids)
         outputs = [(seq.seq_id, seq.completion_token_ids) for seq in seqs if seq.is_finished]

@@ -6,6 +6,16 @@ from nanovllm.engine.block_manager import BlockManager
 
 
 class Scheduler:
+    """
+    1. 序列管理
+    维护两个队列，等待队列和运行队列，
+    负责将序列在不同状态之间进行转换（等待 -> 运行 -> 完成）
+    2. 并发调度
+    控制并发序列数量不超过`max_num_seqs
+    限制批处理`token`数量不超过`max_num_batched_tokens`
+    通过`BlockManager`管理KV缓存块的分配和回收
+
+    """
 
     def __init__(self, config: Config):
         self.max_num_seqs = config.max_num_seqs
@@ -19,28 +29,30 @@ class Scheduler:
         return not self.waiting and not self.running
 
     def add(self, seq: Sequence):
-        self.waiting.append(seq)
+        self.waiting.append(seq)        # 将seq加入等待队列，表示这些token等待处理
 
     def schedule(self) -> tuple[list[Sequence], bool]:
+        # 这是一个集成式的调度
         # prefill
         scheduled_seqs = []
         num_seqs = 0
         num_batched_tokens = 0
         while self.waiting and num_seqs < self.max_num_seqs:
-            seq = self.waiting[0]
+            seq = self.waiting[0]       # 出队列
             if num_batched_tokens + len(seq) > self.max_num_batched_tokens or not self.block_manager.can_allocate(seq):
                 break
             num_seqs += 1
             self.block_manager.allocate(seq)
             num_batched_tokens += len(seq) - seq.num_cached_tokens
             seq.status = SequenceStatus.RUNNING
-            self.waiting.popleft()
-            self.running.append(seq)
+            self.waiting.popleft()      # 类似pop(0) 去掉第一个元素用的，但更高效
+            self.running.append(seq)    # 从等待态变为运行态
             scheduled_seqs.append(seq)
         if scheduled_seqs:
             return scheduled_seqs, True
 
         # decode
+        # 当运行队列不为空，并且没有超过处理长度`max_num_seqs`
         while self.running and num_seqs < self.max_num_seqs:
             seq = self.running.popleft()
             while not self.block_manager.can_append(seq):
